@@ -59,6 +59,7 @@
 #define RVE RV('E') /* E and I are mutually exclusive */
 #define RVM RV('M')
 #define RVA RV('A')
+#define RVB RV('B')
 #define RVF RV('F')
 #define RVD RV('D')
 #define RVV RV('V')
@@ -289,6 +290,7 @@ struct RISCVCPU {
         bool ext_f;
         bool ext_d;
         bool ext_c;
+        bool ext_b;
         bool ext_s;
         bool ext_u;
         bool ext_h;
