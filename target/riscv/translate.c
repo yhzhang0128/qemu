@@ -775,27 +775,6 @@ static bool gen_arith_div_uw(DisasContext *ctx, arg_r *a,
 
 #endif
 
-static void gen_andn(TCGv ret, TCGv arg1, TCGv arg2)
-{
-    TCGv t = tcg_temp_new();
-    tcg_gen_andc_tl(ret, arg1, arg2);
-    tcg_temp_free(t);
-}
-
-static void gen_orn(TCGv ret, TCGv arg1, TCGv arg2)
-{
-    TCGv t = tcg_temp_new();
-    tcg_gen_orc_tl(ret, arg1, arg2);
-    tcg_temp_free(t);
-}
-
-static void gen_xnor(TCGv ret, TCGv arg1, TCGv arg2)
-{
-    TCGv t = tcg_temp_new();
-    tcg_gen_eqv_tl(ret, arg1, arg2);
-    tcg_temp_free(t);
-}
-
 static void gen_pack(TCGv ret, TCGv arg1, TCGv arg2)
 {
     tcg_gen_deposit_tl(ret, arg1, arg2,
@@ -825,7 +804,7 @@ static void gen_sbop_mask(TCGv ret, TCGv shamt)
     tcg_gen_shl_tl(ret, ret, shamt);
 }
 
-static void gen_sbset(TCGv ret, TCGv arg1, TCGv shamt)
+static void gen_bset(TCGv ret, TCGv arg1, TCGv shamt)
 {
     TCGv t = tcg_temp_new();
 
@@ -835,7 +814,7 @@ static void gen_sbset(TCGv ret, TCGv arg1, TCGv shamt)
     tcg_temp_free(t);
 }
 
-static void gen_sbclr(TCGv ret, TCGv arg1, TCGv shamt)
+static void gen_bclr(TCGv ret, TCGv arg1, TCGv shamt)
 {
     TCGv t = tcg_temp_new();
 
@@ -845,7 +824,7 @@ static void gen_sbclr(TCGv ret, TCGv arg1, TCGv shamt)
     tcg_temp_free(t);
 }
 
-static void gen_sbinv(TCGv ret, TCGv arg1, TCGv shamt)
+static void gen_binv(TCGv ret, TCGv arg1, TCGv shamt)
 {
     TCGv t = tcg_temp_new();
 
@@ -855,7 +834,7 @@ static void gen_sbinv(TCGv ret, TCGv arg1, TCGv shamt)
     tcg_temp_free(t);
 }
 
-static void gen_sbext(TCGv ret, TCGv arg1, TCGv shamt)
+static void gen_bext(TCGv ret, TCGv arg1, TCGv shamt)
 {
     tcg_gen_shr_tl(ret, arg1, shamt);
     tcg_gen_andi_tl(ret, ret, 1);
@@ -884,11 +863,7 @@ static bool gen_grevi(DisasContext *ctx, arg_grevi *a)
 
     if (a->shamt == (TARGET_LONG_BITS - 8)) {
         /* rev8, byte swaps */
-#ifdef TARGET_RISCV32
-        tcg_gen_bswap32_tl(source1, source1);
-#else
-        tcg_gen_bswap64_tl(source1, source1);
-#endif
+        tcg_gen_bswap_tl(source1, source1);
     } else {
         source2 = tcg_temp_new();
         tcg_gen_movi_tl(source2, a->shamt);
@@ -921,7 +896,7 @@ GEN_SHADD(3)
 static void gen_ctzw(TCGv ret, TCGv arg1)
 {
     tcg_gen_ori_i64(ret, arg1, MAKE_64BIT_MASK(32, 32));
-    tcg_gen_ctzi_i64(ret, ret, 32);
+    tcg_gen_ctzi_i64(ret, ret, 64);
 }
 
 static void gen_clzw(TCGv ret, TCGv arg1)
@@ -931,7 +906,7 @@ static void gen_clzw(TCGv ret, TCGv arg1)
     tcg_gen_subi_i64(ret, ret, 32);
 }
 
-static void gen_pcntw(TCGv ret, TCGv arg1)
+static void gen_cpopw(TCGv ret, TCGv arg1)
 {
     tcg_gen_ext32u_tl(arg1, arg1);
     tcg_gen_ctpop_tl(ret, arg1);
@@ -999,11 +974,11 @@ static void gen_grevw(TCGv ret, TCGv arg1, TCGv arg2)
 static void gen_gorcw(TCGv ret, TCGv arg1, TCGv arg2)
 {
     tcg_gen_ext32u_tl(arg1, arg1);
-    gen_helper_gorc(ret, arg1, arg2);
+    gen_helper_gorcw(ret, arg1, arg2);
 }
 
-#define GEN_SHADDU_W(SHAMT)                                       \
-static void gen_sh##SHAMT##addu_w(TCGv ret, TCGv arg1, TCGv arg2) \
+#define GEN_SHADD_UW(SHAMT)                                       \
+static void gen_sh##SHAMT##add_uw(TCGv ret, TCGv arg1, TCGv arg2) \
 {                                                                 \
     TCGv t = tcg_temp_new();                                      \
                                                                   \
@@ -1015,11 +990,11 @@ static void gen_sh##SHAMT##addu_w(TCGv ret, TCGv arg1, TCGv arg2) \
     tcg_temp_free(t);                                             \
 }
 
-GEN_SHADDU_W(1)
-GEN_SHADDU_W(2)
-GEN_SHADDU_W(3)
+GEN_SHADD_UW(1)
+GEN_SHADD_UW(2)
+GEN_SHADD_UW(3)
 
-static void gen_addu_w(TCGv ret, TCGv arg1, TCGv arg2)
+static void gen_add_uw(TCGv ret, TCGv arg1, TCGv arg2)
 {
     tcg_gen_ext32u_tl(arg1, arg1);
     tcg_gen_add_tl(ret, arg1, arg2);
@@ -1064,15 +1039,18 @@ static bool gen_shift(DisasContext *ctx, arg_r *a,
 }
 
 static bool gen_shifti(DisasContext *ctx, arg_shift *a,
-                        void(*func)(TCGv, TCGv, TCGv))
+                       void(*func)(TCGv, TCGv, TCGv))
 {
+    if (a->shamt >= TARGET_LONG_BITS) {
+        return false;
+    }
+
     TCGv source1 = tcg_temp_new();
     TCGv source2 = tcg_temp_new();
 
     gen_get_gpr(source1, a->rs1);
-    tcg_gen_movi_tl(source2, a->shamt);
 
-    tcg_gen_andi_tl(source2, source2, TARGET_LONG_BITS - 1);
+    tcg_gen_movi_tl(source2, a->shamt);
     (*func)(source1, source1, source2);
 
     gen_set_gpr(a->rd, source1);
@@ -1084,7 +1062,7 @@ static bool gen_shifti(DisasContext *ctx, arg_shift *a,
 #ifdef TARGET_RISCV64
 
 static bool gen_shiftw(DisasContext *ctx, arg_r *a,
-                        void(*func)(TCGv, TCGv, TCGv))
+                       void(*func)(TCGv, TCGv, TCGv))
 {
     TCGv source1 = tcg_temp_new();
     TCGv source2 = tcg_temp_new();
@@ -1111,7 +1089,6 @@ static bool gen_shiftiw(DisasContext *ctx, arg_shift *a,
     gen_get_gpr(source1, a->rs1);
     tcg_gen_movi_tl(source2, a->shamt);
 
-    tcg_gen_andi_tl(source2, source2, 31);
     (*func)(source1, source1, source2);
     tcg_gen_ext32s_tl(source1, source1);
 

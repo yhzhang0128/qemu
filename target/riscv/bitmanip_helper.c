@@ -100,4 +100,3 @@ target_ulong HELPER(gorcw)(target_ulong rs1, target_ulong rs2)
 }
 
 #endif
-
