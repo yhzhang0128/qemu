@@ -544,18 +544,18 @@ static void rv32_sifive_u_cpu_init(Object *obj)
 
 static void rv32_sifive_e_cpu_init(Object *obj)
 {
-    CPURISCVState *env = &RISCV_CPU(obj)->env;
     RISCVCPU *cpu = RISCV_CPU(obj);
-
-    set_misa(env, MXL_RV32, RVI | RVM | RVA | RVC | RVU);
+    CPURISCVState *env = &cpu->env;
+    set_misa(env, MXL_RV32, RVI | RVM | RVA | RVF | RVD | RVC | RVS | RVU);
     env->priv_ver = PRIV_VERSION_1_10_0;
 #ifndef CONFIG_USER_ONLY
-    set_satp_mode_max_supported(cpu, VM_1_10_MBARE);
+    set_satp_mode_max_supported(cpu, VM_1_10_SV32);
 #endif
 
     /* inherited from parent obj via riscv_cpu_init() */
     cpu->cfg.ext_ifencei = true;
     cpu->cfg.ext_icsr = true;
+    cpu->cfg.mmu = true;
     cpu->cfg.pmp = true;
 }
 

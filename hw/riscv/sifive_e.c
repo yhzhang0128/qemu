@@ -54,6 +54,9 @@ static const MemMapEntry sifive_e_memmap[] = {
     [SIFIVE_E_DEV_MROM] =     {     0x1000,     0x2000 },
     [SIFIVE_E_DEV_OTP] =      {    0x20000,     0x2000 },
     [SIFIVE_E_DEV_CLINT] =    {  0x2000000,    0x10000 },
+
+    [SIFIVE_E_DEV_ITIM] =     {  0x8000000,  0x2000000 },
+
     [SIFIVE_E_DEV_PLIC] =     {  0xc000000,  0x4000000 },
     [SIFIVE_E_DEV_AON] =      { 0x10000000,     0x8000 },
     [SIFIVE_E_DEV_PRCI] =     { 0x10008000,     0x8000 },
@@ -68,7 +71,7 @@ static const MemMapEntry sifive_e_memmap[] = {
     [SIFIVE_E_DEV_QSPI2] =    { 0x10034000,     0x1000 },
     [SIFIVE_E_DEV_PWM2] =     { 0x10035000,     0x1000 },
     [SIFIVE_E_DEV_XIP] =      { 0x20000000, 0x20000000 },
-    [SIFIVE_E_DEV_DTIM] =     { 0x80000000,     0x4000 }
+    [SIFIVE_E_DEV_DTIM] =     { 0x80000000,   0x400000 }
 };
 
 static void sifive_e_machine_init(MachineState *machine)
@@ -94,6 +97,13 @@ static void sifive_e_machine_init(MachineState *machine)
     /* Data Tightly Integrated Memory */
     memory_region_add_subregion(sys_mem,
         memmap[SIFIVE_E_DEV_DTIM].base, machine->ram);
+
+    /* Instruction Tightly Integrated Memory */
+    MemoryRegion *itim_mem = g_new(MemoryRegion, 1);
+    memory_region_init_ram(itim_mem, NULL, "riscv.sifive.e.itim",
+        memmap[SIFIVE_E_DEV_ITIM].size, &error_fatal);
+    memory_region_add_subregion(sys_mem,
+        memmap[SIFIVE_E_DEV_ITIM].base, itim_mem);
 
     /* Mask ROM reset vector */
     uint32_t reset_vec[4];
