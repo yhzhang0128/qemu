@@ -201,8 +201,9 @@ static void sifive_e_soc_init(Object *obj)
 }
 
 
-#define SPI1_TXDATA   72UL
-#define SPI1_RXDATA   76UL
+#define BLOCK_SIZE        512
+#define SPI1_TXDATA       72UL
+#define SPI1_RXDATA       76UL
 #define TYPE_EGOS_SDCARD "egos.2000.sd"
 enum {
     SD_IDLE,
@@ -212,7 +213,8 @@ enum {
     SD_GETTING_CMD16,
     SD_GETTING_CMD55,
     SD_GETTING_CMD58,
-    SD_GETTING_ACMD41
+    SD_GETTING_ACMD41,
+    SD_GETTING_CMD17,  // read single block
 };
 static int sd_state;
 static int sd_cmd_idx;
@@ -246,6 +248,10 @@ static uint64_t egos_sd_read(void *storage, hwaddr addr, unsigned int size)
     static char cmd58_reply[] = {0x00, 0xC0, 0xFF, 0x80, 0x00};
     static char cmd8_reply[] = {0x01, 0x00, 0x00, 0x01, 0xAA};
 
+    static int cmd17_idx = -1;
+    static char block_to_read[BLOCK_SIZE + 1];
+    block_to_read[0] = 0xFE;
+
     switch (sd_cmd[0]) {
     case 0x40: // cmd0
         ret = 0x01;
@@ -253,20 +259,44 @@ static uint64_t egos_sd_read(void *storage, hwaddr addr, unsigned int size)
     case 0x48: // cmd8
         ret = cmd8_reply[cmd8_idx++];
         break;
+    case 0x7A: // cmd58
+        ret = cmd58_reply[cmd58_idx++];
+        break;
     case 0x50: // cmd16
+    case 0x51: // cmd17
     case 0x69: // acmd41
     case 0x77: // cmd55
         ret = 0x00;
-        break;
-    case 0x7A: // cmd58
-        ret = cmd58_reply[cmd58_idx++];
         break;
     default:
         printf("[QEMU] unknown SD command type=0x%x\n", sd_cmd[0]);
         assert(0);
     }
 
-    if (sd_cmd[0] == 0x7A && cmd58_idx == 5) {
+    if (sd_cmd[0] == 0x51 && cmd17_idx == -1) {
+        // before sending a disk block
+        cmd17_idx = 0;
+        int part1 = (sd_cmd[1] << 24) & 0xFF000000;
+        int part2 = (sd_cmd[2] << 16) & 0x00FF0000;
+        int part3 = (sd_cmd[3] << 8)  & 0x0000FF00;
+        int part4 = sd_cmd[4]         & 0x000000FF;
+        int block_no = part1 | part2 | part3 | part4;
+
+        // emulate 30ms disk latency
+        usleep(30 * 1000);
+
+        char *dst = block_to_read + 1;
+        memcpy(dst, sd_storage + block_no * BLOCK_SIZE, BLOCK_SIZE);
+    } else if (sd_cmd[0] == 0x51 && cmd17_idx < BLOCK_SIZE) {
+        // during sending a disk block
+        ret = block_to_read[cmd17_idx++];
+    } else if (sd_cmd[0] == 0x51 && cmd17_idx == BLOCK_SIZE) {
+        // sending the last byte of a disk block
+        ret = block_to_read[cmd17_idx];
+        cmd17_idx = -1;
+        sd_cmd_idx = 0;
+        sd_state = SD_IDLE;
+    } else if (sd_cmd[0] == 0x7A && cmd58_idx == 5) {
         cmd58_idx = 0;
         sd_cmd_idx = 0;
         sd_state = SD_IDLE;
@@ -308,6 +338,10 @@ static void egos_sd_write(void *storage, hwaddr addr,
         sd_cmd[sd_cmd_idx++] = 0x50;
         sd_state = SD_GETTING_CMD16;
         break;
+    case 0x51: // cmd17
+        sd_cmd[sd_cmd_idx++] = 0x51;
+        sd_state = SD_GETTING_CMD17;
+        break;
     case 0x69:
         sd_cmd[sd_cmd_idx++] = 0x69;
         sd_state = SD_GETTING_ACMD41;
@@ -334,11 +368,27 @@ static const MemoryRegionOps egos_sd_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
-static void egos_sd_reset(DeviceState *d) {}
+#include <fcntl.h>
+#include <sys/stat.h>
+static void egos_sd_reset(DeviceState *d)
+{
+    struct stat st;
+    const char* file_name = "tools/disk.img";
+    stat(file_name, &st);
+    if (st.st_size != sizeof(sd_storage)) {
+        printf("[QEMU] tools/disk.img is %ld instead of %ld bytes\n", st.st_size, sizeof(sd_storage));
+        printf("[QEMU] Make sure to `make install` first\n");
+        assert(0);
+    }
+
+    int fd = open(file_name, O_RDONLY);
+    for (int nread = 0; nread < st.st_size; )
+        nread += read(fd, sd_storage + nread, st.st_size - nread);
+}
 
 static void egos_sd_realize(DeviceState *dev, Error **errp)
 {
-    memset(sd_storage, 0xFF, sizeof(sd_storage));
+    egos_sd_reset(dev);
 
     const MemMapEntry *memmap = sifive_e_memmap;
     MemoryRegion *spi1_mmio = g_new(MemoryRegion, 1);
