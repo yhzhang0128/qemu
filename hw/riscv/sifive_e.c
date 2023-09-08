@@ -200,16 +200,132 @@ static void sifive_e_soc_init(Object *obj)
                             TYPE_SIFIVE_E_AON);
 }
 
+
+#define SPI1_TXDATA   72UL
+#define SPI1_RXDATA   76UL
+#define TYPE_EGOS_SDCARD "egos.2000.sd"
+enum {
+    SD_IDLE,
+    SD_READY,
+    SD_GETTING_CMD0,
+    SD_GETTING_CMD8,
+    SD_GETTING_CMD16,
+    SD_GETTING_CMD55,
+    SD_GETTING_CMD58,
+    SD_GETTING_ACMD41
+};
+static int sd_state;
+static int sd_cmd_idx;
+static char sd_cmd[32];
+static char sd_storage[4 * 1024 * 1024];
+
+// SD commands for initialization
+// cmd0 {0x40, 0x00, 0x00, 0x00, 0x00, 0x95} => 0x01
+// cmd8 {0x48, 0x00, 0x00, 0x01, 0xAA, 0x87} => 0x01
+// cmd16 = {0x50, 0x00, 0x00, 0x02, 0x00, 0xFF} => 0x00
+// cmd58 = {0x7A, 0x00, 0x00, 0x00, 0x00, 0xFF} => 0xC0FF8000
+// cmd55 = {0x77, 0x00, 0x00, 0x00, 0x00, 0xFF} => 0x00
+// acmd41 = {0x69, 0x40, 0x00, 0x00, 0x00, 0xFF} => 0x00
+
+// SD commands for read and write
+// cmd17 = {0x51, arg[3], arg[2], arg[1], arg[0], 0xFF} => read single block
+// cmd24 = {0x58, arg[3], arg[2], arg[1], arg[0], 0xFF} => write single block
+
 static uint64_t egos_sd_read(void *storage, hwaddr addr, unsigned int size)
 {
-    printf("[QEMU] egos_sd_read: addr=%lx, size=%x\n", addr, size);
-    return 0;
+    //printf("[QEMU] egos_sd_read: addr=%ld, size=%d, state=%d\n", addr, size, sd_state);
+    if (addr != SPI1_RXDATA) return 0;
+    if (sd_state != SD_READY) {
+        if (sd_cmd_idx >= 6) sd_state = SD_READY;
+        return 0xFF;
+    }
+
+    // sd_cmd should hold a complete SD command
+    uint64_t ret = 0xFF;
+    static int cmd8_idx = 0, cmd58_idx = 0;
+    static char cmd58_reply[] = {0x00, 0xC0, 0xFF, 0x80, 0x00};
+    static char cmd8_reply[] = {0x01, 0x00, 0x00, 0x01, 0xAA};
+
+    switch (sd_cmd[0]) {
+    case 0x40: // cmd0
+        ret = 0x01;
+        break;
+    case 0x48: // cmd8
+        ret = cmd8_reply[cmd8_idx++];
+        break;
+    case 0x50: // cmd16
+    case 0x69: // acmd41
+    case 0x77: // cmd55
+        ret = 0x00;
+        break;
+    case 0x7A: // cmd58
+        ret = cmd58_reply[cmd58_idx++];
+        break;
+    default:
+        printf("[QEMU] unknown SD command type=0x%x\n", sd_cmd[0]);
+        assert(0);
+    }
+
+    if (sd_cmd[0] == 0x7A && cmd58_idx == 5) {
+        cmd58_idx = 0;
+        sd_cmd_idx = 0;
+        sd_state = SD_IDLE;
+    } else if (sd_cmd[0] == 0x48 && cmd8_idx == 5) {
+        cmd8_idx = 0;
+        sd_cmd_idx = 0;
+        sd_state = SD_IDLE;
+    } else if (sd_cmd[0] != 0x7A && sd_cmd[0] != 0x48) {
+        sd_cmd_idx = 0;
+        sd_state = SD_IDLE;
+    }
+
+    ret &= 0xFF;
+    return ret;
 }
 
 static void egos_sd_write(void *storage, hwaddr addr,
                              uint64_t val64, unsigned int size)
 {
-    printf("[QEMU] egos_sd_write: addr=%lx, val=%lu, size=%x\n", addr, val64, size);
+    //printf("[QEMU] egos_sd_write: addr=%ld, val=0x%lx, size=%d, state=%d\n", addr, val64, size, sd_state);
+    if (addr != SPI1_TXDATA) return;
+
+    if (sd_state != SD_IDLE && sd_state != SD_READY) {
+        sd_cmd[sd_cmd_idx++] = (char)val64;
+        if (sd_cmd_idx == 32) assert(0);
+        return;
+    }
+
+    switch (val64) {
+    case 0x40: // cmd0
+        sd_cmd[sd_cmd_idx++] = 0x40;
+        sd_state = SD_GETTING_CMD0;
+        break;
+    case 0x48: // cmd8
+        sd_cmd[sd_cmd_idx++] = 0x48;
+        sd_state = SD_GETTING_CMD8;
+        break;
+    case 0x50: // cmd16
+        sd_cmd[sd_cmd_idx++] = 0x50;
+        sd_state = SD_GETTING_CMD16;
+        break;
+    case 0x69:
+        sd_cmd[sd_cmd_idx++] = 0x69;
+        sd_state = SD_GETTING_ACMD41;
+        break;
+    case 0x77:
+        sd_cmd[sd_cmd_idx++] = 0x77;
+        sd_state = SD_GETTING_CMD55;
+        break;
+    case 0x7A: // cmd58
+        sd_cmd[sd_cmd_idx++] = 0x7A;
+        sd_state = SD_GETTING_CMD58;
+        break;
+    case 0xFF:
+        break;
+    default:
+        printf("[QEMU] unknown SD command type=0x%lx\n", val64);
+        assert(0);
+    }
 }
 
 static const MemoryRegionOps egos_sd_ops = {
@@ -217,9 +333,6 @@ static const MemoryRegionOps egos_sd_ops = {
     .write = egos_sd_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
-
-#define TYPE_EGOS_SDCARD "egos.2000.sd"
-static char sd_storage[4 * 1024 * 1024];
 
 static void egos_sd_reset(DeviceState *d) {}
 
