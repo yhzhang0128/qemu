@@ -200,6 +200,64 @@ static void sifive_e_soc_init(Object *obj)
                             TYPE_SIFIVE_E_AON);
 }
 
+static uint64_t egos_sd_read(void *storage, hwaddr addr, unsigned int size)
+{
+    printf("[QEMU] egos_sd_read: addr=%lx, size=%x\n", addr, size);
+    return 0;
+}
+
+static void egos_sd_write(void *storage, hwaddr addr,
+                             uint64_t val64, unsigned int size)
+{
+    printf("[QEMU] egos_sd_write: addr=%lx, val=%lu, size=%x\n", addr, val64, size);
+}
+
+static const MemoryRegionOps egos_sd_ops = {
+    .read = egos_sd_read,
+    .write = egos_sd_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
+#define TYPE_EGOS_SDCARD "egos.2000.sd"
+static char sd_storage[4 * 1024 * 1024];
+
+static void egos_sd_reset(DeviceState *d) {}
+
+static void egos_sd_realize(DeviceState *dev, Error **errp)
+{
+    memset(sd_storage, 0xFF, sizeof(sd_storage));
+
+    const MemMapEntry *memmap = sifive_e_memmap;
+    MemoryRegion *spi1_mmio = g_new(MemoryRegion, 1);
+    memory_region_init_io(spi1_mmio, OBJECT(dev),
+                          &egos_sd_ops, sd_storage,
+                          TYPE_EGOS_SDCARD,
+                          memmap[SIFIVE_E_DEV_QSPI1].size);
+
+    sysbus_init_mmio(SYS_BUS_DEVICE(dev), spi1_mmio);
+    sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, memmap[SIFIVE_E_DEV_QSPI1].base);
+}
+
+static void egos_sd_init(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    dc->reset = egos_sd_reset;
+    dc->realize = egos_sd_realize;
+}
+
+static const TypeInfo egos_sd_info = {
+    .name           = TYPE_EGOS_SDCARD,
+    .parent         = TYPE_SYS_BUS_DEVICE,
+    .instance_size  = sizeof(sd_storage),
+    .class_init     = egos_sd_init,
+};
+
+static void egos_sd_register_types(void)
+{
+    type_register_static(&egos_sd_info);
+}
+type_init(egos_sd_register_types)
+
 static void sifive_e_soc_realize(DeviceState *dev, Error **errp)
 {
     MachineState *ms = MACHINE(qdev_get_machine());
@@ -277,8 +335,12 @@ static void sifive_e_soc_realize(DeviceState *dev, Error **errp)
         memmap[SIFIVE_E_DEV_PWM0].base, memmap[SIFIVE_E_DEV_PWM0].size);
     sifive_uart_create(sys_mem, memmap[SIFIVE_E_DEV_UART1].base,
         serial_hd(1), qdev_get_gpio_in(DEVICE(s->plic), SIFIVE_E_UART1_IRQ));
-    create_unimplemented_device("riscv.sifive.e.qspi1",
-        memmap[SIFIVE_E_DEV_QSPI1].base, memmap[SIFIVE_E_DEV_QSPI1].size);
+    /* create_unimplemented_device("riscv.sifive.e.qspi1", */
+    /*     memmap[SIFIVE_E_DEV_QSPI1].base, memmap[SIFIVE_E_DEV_QSPI1].size); */
+    /* Map SPI1 as an SD card device */
+    DeviceState *sd = qdev_new(TYPE_EGOS_SDCARD);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(sd), &error_fatal);
+
     create_unimplemented_device("riscv.sifive.e.pwm1",
         memmap[SIFIVE_E_DEV_PWM1].base, memmap[SIFIVE_E_DEV_PWM1].size);
     create_unimplemented_device("riscv.sifive.e.qspi2",
