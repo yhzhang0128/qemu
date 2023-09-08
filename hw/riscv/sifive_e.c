@@ -215,9 +215,12 @@ enum {
     SD_GETTING_CMD58,
     SD_GETTING_ACMD41,
     SD_GETTING_CMD17,  // read single block
+    SD_GETTING_CMD24,  // write single block
+    SD_FINISH_CMD24
 };
 static int sd_state;
 static int sd_cmd_idx;
+static int sd_cmd24_idx;
 static char sd_cmd[32];
 static char sd_storage[4 * 1024 * 1024];
 
@@ -237,6 +240,16 @@ static uint64_t egos_sd_read(void *storage, hwaddr addr, unsigned int size)
 {
     //printf("[QEMU] egos_sd_read: addr=%ld, size=%d, state=%d\n", addr, size, sd_state);
     if (addr != SPI1_RXDATA) return 0;
+
+    if (sd_state == SD_FINISH_CMD24) {
+        // ack for disk block write
+        sd_cmd_idx = 0;
+        sd_cmd24_idx = 0;
+        sd_state = SD_IDLE;
+        // emulate 30ms disk latency
+        usleep(30 * 1000);
+        return 0x05;
+    }
     if (sd_state != SD_READY) {
         if (sd_cmd_idx >= 6) sd_state = SD_READY;
         return 0xFF;
@@ -264,6 +277,7 @@ static uint64_t egos_sd_read(void *storage, hwaddr addr, unsigned int size)
         break;
     case 0x50: // cmd16
     case 0x51: // cmd17
+    case 0x58: // cmd24
     case 0x69: // acmd41
     case 0x77: // cmd55
         ret = 0x00;
@@ -304,7 +318,8 @@ static uint64_t egos_sd_read(void *storage, hwaddr addr, unsigned int size)
         cmd8_idx = 0;
         sd_cmd_idx = 0;
         sd_state = SD_IDLE;
-    } else if (sd_cmd[0] != 0x7A && sd_cmd[0] != 0x48) {
+    } else if (sd_cmd[0] != 0x7A && sd_cmd[0] != 0x48
+            && sd_cmd[0] != 0x51 && sd_cmd[0] != 0x58) {
         sd_cmd_idx = 0;
         sd_state = SD_IDLE;
     }
@@ -314,7 +329,7 @@ static uint64_t egos_sd_read(void *storage, hwaddr addr, unsigned int size)
 }
 
 static void egos_sd_write(void *storage, hwaddr addr,
-                             uint64_t val64, unsigned int size)
+                          uint64_t val64, unsigned int size)
 {
     //printf("[QEMU] egos_sd_write: addr=%ld, val=0x%lx, size=%d, state=%d\n", addr, val64, size, sd_state);
     if (addr != SPI1_TXDATA) return;
@@ -322,6 +337,33 @@ static void egos_sd_write(void *storage, hwaddr addr,
     if (sd_state != SD_IDLE && sd_state != SD_READY) {
         sd_cmd[sd_cmd_idx++] = (char)val64;
         if (sd_cmd_idx == 32) assert(0);
+        return;
+    }
+
+    if (sd_state == SD_READY && sd_cmd[0] == 0x58) {
+        // write a disk block
+        int part1 = (sd_cmd[1] << 24) & 0xFF000000;
+        int part2 = (sd_cmd[2] << 16) & 0x00FF0000;
+        int part3 = (sd_cmd[3] << 8)  & 0x0000FF00;
+        int part4 = sd_cmd[4]         & 0x000000FF;
+        int block_no = part1 | part2 | part3 | part4;
+
+        if (sd_cmd24_idx == 0) {
+            // token
+            if (val64 == 0xFE) {
+                //printf("[QEMU] get token 0x%lx for cmd24\n", val64);
+                sd_cmd24_idx++;
+            }
+        } else if (sd_cmd24_idx <= BLOCK_SIZE) {
+            // disk block
+            sd_storage[block_no * BLOCK_SIZE + sd_cmd24_idx - 1] = (char)val64;
+            sd_cmd24_idx++;
+        } else if (sd_cmd24_idx <= BLOCK_SIZE + 2) {
+            // checksum
+            sd_cmd24_idx++;
+        } else {
+            sd_state = SD_FINISH_CMD24;
+        }
         return;
     }
 
@@ -341,6 +383,10 @@ static void egos_sd_write(void *storage, hwaddr addr,
     case 0x51: // cmd17
         sd_cmd[sd_cmd_idx++] = 0x51;
         sd_state = SD_GETTING_CMD17;
+        break;
+    case 0x58: // cmd24
+        sd_cmd[sd_cmd_idx++] = 0x58;
+        sd_state = SD_GETTING_CMD24;
         break;
     case 0x69:
         sd_cmd[sd_cmd_idx++] = 0x69;
