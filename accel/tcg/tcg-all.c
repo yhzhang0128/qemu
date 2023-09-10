@@ -108,6 +108,8 @@ static int tcg_init_machine(MachineState *ms)
 #else
     unsigned max_cpus = ms->smp.max_cpus;
 #endif
+    printf("[QEMU] tcg_init_machine: Set max_cpus %d -> 2\n", max_cpus);
+    max_cpus = 2;
 
     tcg_allowed = true;
     mttcg_enabled = s->mttcg_enabled;

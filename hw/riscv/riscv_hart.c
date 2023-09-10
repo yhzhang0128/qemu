@@ -57,6 +57,8 @@ static void riscv_harts_realize(DeviceState *dev, Error **errp)
     RISCVHartArrayState *s = RISCV_HART_ARRAY(dev);
     int n;
 
+    printf("[QEMU] riscv_harts_realize: Set s->num_harts %d -> 2\n", s->num_harts);
+    s->num_harts = 2;
     s->harts = g_new0(RISCVCPU, s->num_harts);
 
     for (n = 0; n < s->num_harts; n++) {
